@@ -1,0 +1,107 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+import numpy as np
+import time
+torch.manual_seed(1)
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,))
+])
+
+trainset = torchvision.datasets.MNIST(root='./data', train=True, download=True, transform=transform)
+
+# 没用到
+testset = torchvision.datasets.MNIST(root='./data', train=False, download=True, transform=transform)
+
+# 划分成100个独立的数据集
+num_subsets = 100
+
+# 每个dataloader样本数量
+subset_size = len(trainset) // num_subsets
+
+# 创建数据加载器字典，每个字典项包含一个训练集加载器和一个测试集加载器
+data_loaders = {}
+for i in range(num_subsets):
+    train_indices = range(i * subset_size, (i + 1) * subset_size)
+    # 选取10%作为测试数据
+    test_indices = np.random.choice(train_indices, size=int(0.1 * subset_size), replace=False)
+    # 移除测试下标
+    train_indices = list(set(train_indices) - set(test_indices))
+
+    train_subset = torch.utils.data.Subset(trainset, train_indices)
+    test_subset = torch.utils.data.Subset(trainset, test_indices)
+    # 封装
+    trainloader = torch.utils.data.DataLoader(train_subset, batch_size=32, shuffle=True)
+    testloader = torch.utils.data.DataLoader(test_subset, batch_size=32, shuffle=False)
+
+    data_loaders[i] = {'train': trainloader, 'test': testloader}
+
+# 定义神经网络模型
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(28*28, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, 10)
+
+    def forward(self, x):
+        x = x.view(-1, 28*28)  # 展平图像
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+# 创建模型实例
+model = Net()
+
+# 损失函数和优化器
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+# 训练模型
+for subset_index in range(num_subsets):  # 对每个独立的数据集进行训练
+    trainloader = data_loaders[subset_index]['train']
+    testloader = data_loaders[subset_index]['test']
+
+    print(f"\nTraining on Subset {subset_index + 1}/{num_subsets}")
+    start = time.time()
+    for epoch in range(10):  # 迭代10次
+        running_loss = 0.0
+        running_sample = 0
+        min = 9999
+        for i, data in enumerate(trainloader, 0):
+            inputs, labels = data
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            running_sample += inputs.size(0)
+        epoch_loss = running_loss / running_sample
+        if(epoch_loss<min):
+            min = epoch_loss
+    end = time.time()
+    print(f'Finished Training on Subset {subset_index + 1}/{num_subsets}')
+    print(f'min_loss:{min}')
+    print(f'Finished time: {end-start}秒 ')
+
+# 在测试集上评估模型
+correct = 0
+total = 0
+with torch.no_grad():
+    for subset_index in range(num_subsets):
+        testloader = data_loaders[subset_index]['test']
+        for data in testloader:
+            images, labels = data
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+print('Accuracy: %d %%' % (
+    100 * correct / total))
